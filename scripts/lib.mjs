@@ -135,15 +135,6 @@ export function dockerPs() {
   })
 }
 
-export function exposePort(file) {
-  try {
-    const m = fs.readFileSync(file, 'utf8').match(/^\s*EXPOSE\s+(\d+)/m)
-    return m ? Number(m[1]) : null
-  } catch {
-    return null
-  }
-}
-
 export function detectBackend(dir) {
   let dockerfiles = findDockerfiles(dir).filter((f) => {
     const b = path.basename(f)
@@ -168,8 +159,8 @@ export function detectBackend(dir) {
     const mainGo = preset === 'go' ? findMainGo(dir, name) : ''
     const container = ps.find((p) => p.name.includes(name))?.name || null
     const hostPort = ps.find((p) => p.name.includes(name))?.hostPort || null
-    const expose = exposePort(file)
-    const port = hostPort || (expose ? 20000 + expose : null)
+    // 端口只认 docker ps 的真实映射；猜出来的端口会让健康检查打到别的服务
+    const port = hostPort
     const artifact = preset === 'go' ? `.harness/${name}` : preset === 'node' ? 'dist' : preset === 'python' ? '.harness/deps' : preset === 'java' ? 'target' : ''
     const build = preset === 'go' && mainGo
       ? `CGO_ENABLED=0 GOOS=linux go build -o .harness/${name} ./${mainGo}`
@@ -196,7 +187,7 @@ export function detectBackend(dir) {
       artifact,
       dest,
       restart: true,
-      dockerfile: path.relative(dir, file),
+      ...(isFile(file) ? { dockerfile: path.relative(dir, file) } : {}),
       needs,
     })
   }

@@ -48,5 +48,5 @@
 ## 容器与端口
 
 - `container` 优先从 `docker ps` 按服务名匹配。
-- `port` 优先取 `docker ps` 的宿主机映射；否则用 Dockerfile `EXPOSE` + `28000` 推断。
+- `port` 只认 `docker ps` 的宿主机映射。取不到就留空并进 `missing`，不按 Dockerfile `EXPOSE` 推算——猜出来的端口会让健康检查打到别的服务。
 - 推断不唯一时留在 `missing`，不要猜。

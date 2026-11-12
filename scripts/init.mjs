@@ -2,7 +2,7 @@
 // 按当前项目生成一套本地调试/部署工具。默认 dry-run 友好、幂等、不覆盖已有配置。
 // 用法：node init.mjs [--root DIR] [--config FILE] [--kind app-webview|backend-service]
 //                     [--package PKG] [--serial IP:PORT] [--port N] [--container NAME]
-//                     [--with-apk|--no-apk] [--android-jar PATH] [--force] [--dry-run]
+//                     [--with-apk|--no-apk] [--force] [--dry-run]
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -71,10 +71,16 @@ function apply(projects) {
   }
 }
 
+function isTracked(file) {
+  return !!sh('git', ['-C', path.dirname(file), 'ls-files', '--error-unmatch', path.basename(file)])
+}
+
 function write(file, content, mode) {
   const rel = path.relative(root, file) || path.basename(file)
-  if (fs.existsSync(file) && !force) {
-    actions.push({ op: 'skip', file: rel, reason: 'exists' })
+  const tracked = isTracked(file)
+  if (fs.existsSync(file) && (tracked || !force)) {
+    if (tracked && force) needs.push(`${rel} 已被团队跟踪，--force 也跳过，请手动合并`)
+    actions.push({ op: 'skip', file: rel, reason: tracked ? 'tracked' : 'exists' })
     return
   }
   if (dry) {
@@ -89,8 +95,10 @@ function write(file, content, mode) {
 
 function copy(file, dest, mode) {
   const rel = path.relative(root, dest) || path.basename(dest)
-  if (fs.existsSync(dest) && !force) {
-    actions.push({ op: 'skip', file: rel, reason: 'exists' })
+  const tracked = isTracked(dest)
+  if (fs.existsSync(dest) && (tracked || !force)) {
+    if (tracked && force) needs.push(`${rel} 已被团队跟踪，--force 也跳过，请手动合并`)
+    actions.push({ op: 'skip', file: rel, reason: tracked ? 'tracked' : 'exists' })
     return
   }
   if (dry) {
@@ -154,7 +162,6 @@ function initApp(p) {
     routePrefix: p.routePrefix || '#/pages',
     build: {
       preset: p.build?.preset && p.build.preset !== 'none' ? p.build.preset : (args['no-apk'] ? 'none' : 'uni-app-apk'),
-      androidJar: args['android-jar'] || p.build?.androidJar || '/usr/lib/android-sdk/platforms/android-34/android.jar',
     },
   }
   saveConfig(dir, cfg)
@@ -167,7 +174,7 @@ function initApp(p) {
       { cmd: 'launch', stop: true },
       { cmd: 'sleep', ms: 800 },
       { cmd: 'state' },
-      { cmd: 'assert', exists: 'body' },
+      { cmd: 'assert', route: '#/pages' },
       { cmd: 'shot', name: '01_smoke' },
     ],
   }, null, 2)}\n`)
@@ -204,10 +211,12 @@ function initApp(p) {
 
 function initBackend(p) {
   const dir = p.root
+  const single = (p.services || []).length === 1
+  if (args.port && !single) needs.push('多服务时 --port 不生效，请逐服务填写 port')
   const services = (p.services || []).map((s) => ({
     ...s,
     container: args.container || s.container,
-    port: Number(args.port || s.port) || null,
+    port: Number((single && args.port) || s.port) || null,
     needs: undefined,
   }))
   for (const s of services) {
@@ -216,20 +225,18 @@ function initBackend(p) {
     if (!s.build) needs.push(`${s.name}:build`)
     if (!s.artifact) needs.push(`${s.name}:artifact`)
   }
-  const cfg = { version: 1, kind: 'backend-service', services }
-  saveConfig(dir, cfg)
+  // 旧版本会按 EXPOSE 猜端口，可能两个服务指向同一个健康地址
+  const merged = saveConfig(dir, { version: 1, kind: 'backend-service', services })
+  for (const [i, a] of (merged.services || []).entries()) {
+    const clash = (merged.services || []).slice(i + 1).find((b) => b.health && b.health === a.health)
+    if (clash) needs.push(`${a.name} 与 ${clash.name} 的 health 相同（${a.health}），请核对 port`)
+  }
 
   copy(path.join(SKILL, 'scripts/deploy.mjs'), path.join(dir, 'scripts/deploy.mjs'), 0o755)
   copy(path.join(SKILL, 'templates/backend-service/README.md'), path.join(dir, 'scripts/README.md'))
   const createdAgents = ensureAgentsBlock(dir)
 
-  const dockerignore = path.join(dir, '.dockerignore')
-  if (!fs.existsSync(dockerignore)) {
-    write(dockerignore, tpl('backend-service/dockerignore.tmpl', {}))
-    addExcludes(dir, ['harness.config.json', 'scripts/deploy.mjs', 'scripts/README.md', '.dockerignore', '.harness/', ...(createdAgents ? ['AGENTS.md'] : [])])
-  } else {
-    addExcludes(dir, ['harness.config.json', 'scripts/deploy.mjs', 'scripts/README.md', '.harness/', ...(createdAgents ? ['AGENTS.md'] : [])])
-  }
+  addExcludes(dir, ['harness.config.json', 'scripts/deploy.mjs', 'scripts/README.md', '.harness/', ...(createdAgents ? ['AGENTS.md'] : [])])
 }
 
 function ensureAgentsBlock(dir) {

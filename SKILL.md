@@ -18,7 +18,7 @@ description: 为一个新项目初始化本机专用的调试/构建/部署工�
 | 适配器 | 适用 | 产物 |
 |---|---|---|
 | `app-webview` | uni-app / H5 / WebView App | `scripts/agent-driver.mjs`、`scripts/scenarios/smoke.json`、可选 `build-apk.sh` + Android 壳 |
-| `backend-service` | 任意语言的后端（Docker 运行） | `scripts/deploy.mjs`、`.dockerignore`、`harness.config.json` |
+| `backend-service` | 任意语言的后端（Docker 运行） | `scripts/deploy.mjs`、`harness.config.json` |
 
 后端语言只是 preset：`go / node / python / java / unknown`，部署契约相同。
 
@@ -26,15 +26,17 @@ description: 为一个新项目初始化本机专用的调试/构建/部署工�
 
 在项目根目录（或包含多个仓库的工作区根目录）执行：
 
+本文件里的 `scripts/...`、`templates/...` 都相对本 skill 目录。skill 加载时会给出它的 base directory，下文用 `$SKILL_DIR` 代指，命令都在目标项目根目录执行：
+
 ```bash
 # 1. 只读检测
-node <skill>/scripts/detect.mjs
+node "$SKILL_DIR/scripts/detect.mjs"
 
 # 2. 看计划，不写文件
-node <skill>/scripts/init.mjs --dry-run
+node "$SKILL_DIR/scripts/init.mjs" --dry-run
 
 # 3. 生成
-node <skill>/scripts/init.mjs
+node "$SKILL_DIR/scripts/init.mjs"
 ```
 
 `detect.mjs` 输出 `projects[]` 和 `missing[]`。只问 `missing` 里的值，不猜：
@@ -44,7 +46,7 @@ node <skill>/scripts/init.mjs
 
 补齐后重跑 `init.mjs`，已存在的文件默认跳过，配置按字段合并。要更新已生成的脚本/模板用 `--force`（配置仍按字段合并，不会丢你手填的值）。
 
-`AGENTS.md` 若已被团队跟踪，`init` 不会改它，只会把你需要手动追加的片段放进 `needs`。
+`--force` 也不会覆盖团队已跟踪的文件：`AGENTS.md`、`scripts/README.md` 这类已被跟踪的文件一律跳过，并在 `needs` 里提示手动合并。
 
 ## 验证
 
@@ -76,12 +78,16 @@ docker rm -f harness-deploy-test
 - 所有生成物写入项目仓库的 `.git/info/exclude`，`git status` 看不到，`git add -A` 也不会带上。
 - 不修改团队已跟踪的文件；`AGENTS.md` 已跟踪时只提示手动追加，不自动改。
 - 不自动 commit、不 push。
-- Skill 本身放在 `~/agent-skills/`，不进业务仓库。
+- Skill 本身留在 skill 源目录（本机是 `~/agent-skills/`），不进业务仓库。
 
 ## 配置
 
 项目根 `harness.config.json`，详见 `references/config-schema.md`。
 预设命令见 `references/presets.md`。
+
+## 维护这个 skill
+
+改 `scripts/lib.mjs` / `scripts/init.mjs` 后跑一次 `node "$SKILL_DIR/scripts/selftest.mjs"`。它造假仓库做断言，不连设备也不碰容器。
 
 ## 边界
 

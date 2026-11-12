@@ -89,7 +89,7 @@ if (svc.health) {
   for (let i = 0; i < 20; i++) {
     try {
       const res = await fetch(svc.health, { signal: AbortSignal.timeout(1500) })
-      if (res.status) { ready = res.status; break }
+      if (res.status < 500) { ready = res.status; break }
     } catch {
       // retry
     }

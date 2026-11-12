@@ -15,7 +15,7 @@
   "port": 9222,
   "out": "./screen/member",
   "routePrefix": "#/pages",
-  "build": { "preset": "uni-app-apk", "androidJar": "/usr/lib/android-sdk/platforms/android-34/android.jar" }
+  "build": { "preset": "uni-app-apk" }
 }
 ```
 

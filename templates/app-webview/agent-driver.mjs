@@ -50,6 +50,7 @@ const HELP = `agent-driver.mjs — WebView CDP 驱动
   --serial IP:PORT   默认 harness.config.json 或 ANDROID_SERIAL
   --package NAME     默认 harness.config.json
   --port N           CDP 本地端口，默认 harness.config.json
+  --config FILE      指定配置，默认 ./harness.config.json
   --out DIR          截图根目录，默认 <cwd>/screen/<app>/<dir>
   --help
 `
