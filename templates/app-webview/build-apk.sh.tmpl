@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# 家属端：把 H5 构建产物打包为可安装的 Android APK（WebView 容器壳，非 HBuilderX 原生打包）。
+# 说明：HBuilderX 根目录布局工程无法被 npm 版 uni cli 完整编译（插件链按项目根 package.json
+# 依赖发现），因此先建 src 布局 shim 工程再编译，产物与本工程源码一致。
+# 依赖：adb aapt zipalign apksigner（apt）、JDK、
+#   ANDROID_JAR: API 34 platform zip 中的 android.jar
+#   D8_JAR:      build-tools zip 中的 lib/d8.jar（Java 字节码，跨架构可用）
+# 用法：
+#   ANDROID_JAR=/path/android.jar D8_JAR=/path/d8.jar bash scripts/build-apk.sh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="${ROOT}/dist"
+WORK="${WORK:-$(mktemp -d)}"
+AAPT2="${AAPT2:-/usr/bin/aapt2}"
+ZIPALIGN="${ZIPALIGN:-/usr/bin/zipalign}"
+JAVA_HOME_BIN="${JAVA_HOME:-/usr/lib/jvm/java-25-openjdk-arm64}"
+PKG="__PACKAGE__"
+VERSION="1.0.0"
+: "${ANDROID_JAR:?需要 ANDROID_JAR=android.jar 路径}"
+# D8_JAR 可选：缺省时使用 dalvik-exchange (dx) 生成 dex
+
+UNI_VERSION="3.0.0-5020620260917001"
+SHIM="${WORK}/shim"
+mkdir -p "$SHIM/src"
+
+echo "[1/7] 准备 src 布局 shim 工程"
+for f in App.vue main.js pages components shared services static uni.scss pages.json manifest.json; do
+  if [ -e "$ROOT/$f" ]; then cp -rL "$ROOT/$f" "$SHIM/src/$f"; fi
+done
+ln -sfn "$ROOT/node_modules" "$SHIM/node_modules"
+cat > "$SHIM/package.json" <<EOF
+{
+  "name": "__SHIM_NAME__",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@dcloudio/uni-app": "$UNI_VERSION",
+    "@dcloudio/uni-app-harmony": "$UNI_VERSION",
+    "@dcloudio/uni-app-plus": "$UNI_VERSION",
+    "@dcloudio/uni-components": "$UNI_VERSION",
+    "@dcloudio/uni-h5": "$UNI_VERSION",
+    "@dcloudio/uni-mp-alipay": "$UNI_VERSION",
+    "@dcloudio/uni-mp-baidu": "$UNI_VERSION",
+    "@dcloudio/uni-mp-harmony": "$UNI_VERSION",
+    "@dcloudio/uni-mp-jd": "$UNI_VERSION",
+    "@dcloudio/uni-mp-kuaishou": "$UNI_VERSION",
+    "@dcloudio/uni-mp-lark": "$UNI_VERSION",
+    "@dcloudio/uni-mp-qq": "$UNI_VERSION",
+    "@dcloudio/uni-mp-toutiao": "$UNI_VERSION",
+    "@dcloudio/uni-mp-weixin": "$UNI_VERSION",
+    "@dcloudio/uni-mp-xhs": "$UNI_VERSION",
+    "@dcloudio/uni-quickapp-webview": "$UNI_VERSION",
+    "vue": "^3.4.21",
+    "vue-i18n": "^9.1.9"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.4.8",
+    "@dcloudio/uni-automator": "$UNI_VERSION",
+    "@dcloudio/uni-cli-shared": "$UNI_VERSION",
+    "@dcloudio/uni-stacktracey": "$UNI_VERSION",
+    "@dcloudio/vite-plugin-uni": "$UNI_VERSION",
+    "@vue/runtime-core": "^3.4.21",
+    "rollup": "4.14.3",
+    "vite": "5.2.8"
+  }
+}
+EOF
+cat > "$SHIM/index.html" <<'EOF'
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      var coverSupport = 'CSS' in window && typeof CSS.supports === 'function' && (CSS.supports('top: env(a)') ||
+        CSS.supports('top: constant(a)'))
+      document.write(
+        '<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0' +
+        (coverSupport ? ', viewport-fit=cover' : '') + '" />')
+    </script>
+    <title>__APP_LABEL__</title>
+    <!--preload-links-->
+    <!--app-context-->
+  </head>
+  <body>
+    <div id="app"><!--app-html--></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
+EOF
+cat > "$SHIM/vite.config.js" <<'EOF'
+import uniPkg from '@dcloudio/vite-plugin-uni'
+import { defineConfig } from 'vite'
+
+const uni = uniPkg.default || uniPkg
+
+export default defineConfig({
+  plugins: [uni()],
+})
+EOF
+
+echo "[2/7] H5 构建"
+# 调试 APK 一律指向测试环境：vite build 默认 NODE_ENV=production 会让
+# shared/config.js 的 auto 环境选择 production URL，这里显式覆盖为 development。
+(cd "$SHIM" && NODE_ENV=development npx uni build -p h5)
+
+mkdir -p "$WORK/dex" "$WORK/res" "$OUT"
+cp -r "$SHIM/dist/build/h5" "$WORK/assets_www"
+mkdir -p "$WORK/assets"
+cp -r "$WORK/assets_www" "$WORK/assets/www"
+mkdir -p "$WORK/src/$PKG"
+cp "$ROOT/scripts/MainActivity.java" "$WORK/src/$PKG/"
+cp "$ROOT/scripts/AndroidManifest.xml" "$WORK/"
+node "$ROOT/scripts/gen-icon.cjs" "$WORK/res" >/dev/null
+
+echo "[3/7] 编译 Java"
+"$JAVA_HOME_BIN/bin/javac" --release 8 -cp "$ANDROID_JAR" -d "$WORK/classes" "$WORK/src/$PKG/MainActivity.java"
+echo "[4/7] dex"
+if [ -n "${D8_JAR:-}" ]; then
+  java -cp "$D8_JAR" com.android.tools.r8.D8 --lib "$ANDROID_JAR" --min-api 23 --output "$WORK/dex" $(find "$WORK/classes" -name '*.class')
+else
+  # 回退：Debian/Ubuntu dalvik-exchange (dx)，JDK25 下 d8(build-tools 34) 会崩溃
+  dalvik-exchange --dex --output="$WORK/dex/classes.dex" "$WORK/classes"
+fi
+echo "[5/7] 资源与打包"
+"$AAPT2" compile --dir "$WORK/res" -o "$WORK/res.zip"
+"$AAPT2" link -o "$WORK/base.apk" -I "$ANDROID_JAR" --manifest "$WORK/AndroidManifest.xml" -A "$WORK/assets" "$WORK/res.zip" --min-sdk-version 23 --target-sdk-version 33
+python3 - "$WORK/base.apk" "$WORK/dex/classes.dex" <<'EOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'a', zipfile.ZIP_DEFLATED) as z:
+    z.write(sys.argv[2], 'classes.dex')
+EOF
+echo "[6/7] 对齐与签名"
+"$ZIPALIGN" -f -p 4 "$WORK/base.apk" "$WORK/aligned.apk"
+KS="${ROOT}/scripts/debug.keystore"
+[ -f "$KS" ] || keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+apksigner sign --ks "$KS" --ks-pass pass:android --key-pass pass:android --out "$OUT/__OUTPUT__-$VERSION-debug.apk" "$WORK/aligned.apk" 2>/dev/null
+apksigner verify "$OUT/__OUTPUT__-$VERSION-debug.apk" 2>/dev/null
+echo "[7/7] 完成: $OUT/__OUTPUT__-$VERSION-debug.apk"
+echo "安装: adb connect <设备IP>:5555 && adb -s <设备IP>:5555 install -r $OUT/__OUTPUT__-$VERSION-debug.apk"
